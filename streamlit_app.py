@@ -26,13 +26,22 @@ from agents.image_generator import ImageGeneratorAgent
 from utils.html_generator import HtmlGenerator
 from config import validate_credentials, OUTPUT_DIR
 
+# Fix encoding issues for logging on Windows
+import codecs
+# Try to use utf-8 encoding for sys.stdout
+try:
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
+except AttributeError:
+    # If that fails, just continue
+    pass
+
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,  # Change from INFO to DEBUG for more detailed logs
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("streamlit_app.log"),
-        logging.StreamHandler()
+        logging.FileHandler("streamlit_app.log", encoding='utf-8'),  # Specify UTF-8 encoding
+        logging.StreamHandler()  # This will use the utf-8 encoding we set above
     ]
 )
 logger = logging.getLogger(__name__)
@@ -163,6 +172,25 @@ st.markdown("""
         justify-content: center;
         margin-top: 2rem;
     }
+    .log-container {
+        background-color: #f0f0f0;
+        border-radius: 5px;
+        padding: 10px;
+        margin-bottom: 10px;
+        max-height: 200px;
+        overflow-y: auto;
+        font-family: monospace;
+        font-size: 0.8rem;
+    }
+    .log-info {
+        color: #1E90FF;
+    }
+    .log-error {
+        color: #FF4500;
+    }
+    .log-success {
+        color: #4CAF50;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -187,8 +215,17 @@ def display_topic_card(topic, index):
 
 # Helper function to view generated images
 def get_image_base64(image_path):
-    with open(image_path, "rb") as img_file:
-        return base64.b64encode(img_file.read()).decode()
+    try:
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode()
+    except Exception as e:
+        logger.error(f"Error reading image {image_path}: {str(e)}")
+        return ""
+
+# Helper function to display logs in a nice format
+def display_log(message, log_type="info"):
+    css_class = f"log-{log_type}"
+    st.markdown(f"<div class='{css_class}'>{message}</div>", unsafe_allow_html=True)
 
 # Main app components
 def main():
@@ -213,6 +250,8 @@ def main():
         st.session_state.final_content = None
     if 'html_output' not in st.session_state:
         st.session_state.html_output = None
+    if 'logs' not in st.session_state:
+        st.session_state.logs = []
     
     # Sidebar for workflow navigation and status
     with st.sidebar:
@@ -232,6 +271,15 @@ def main():
             else:
                 st.text(name)
         
+        # Log display
+        st.markdown("## Process Logs")
+        log_container = st.container()
+        with log_container:
+            st.markdown("<div class='log-container'>", unsafe_allow_html=True)
+            for log in st.session_state.logs[-10:]:  # Show only the last 10 logs
+                display_log(log['message'], log['type'])
+            st.markdown("</div>", unsafe_allow_html=True)
+        
         # Reset button
         if st.button("Start Over", key='reset'):
             st.session_state.stage = 'discover'
@@ -242,7 +290,17 @@ def main():
             st.session_state.refinement_history = []
             st.session_state.final_content = None
             st.session_state.html_output = None
+            st.session_state.logs = []
             st.rerun()
+    
+    # Helper function to add logs - WITHOUT emojis to avoid encoding issues
+    def add_log(message, log_type="info"):
+        # Remove emojis from the message for logger
+        clean_message = message
+        # Add to session state with original message
+        st.session_state.logs.append({"message": message, "type": log_type})
+        # Log the clean message
+        logger.info(clean_message)
     
     # Main content area - changes based on current stage
     if st.session_state.stage == 'discover':
@@ -253,10 +311,15 @@ def main():
         if st.button("Discover Trending Topics", key="discover_btn"):
             with st.spinner("Searching for trending AI topics..."):
                 try:
+                    add_log("Starting trending topic discovery...", "info")
+                    
                     st.session_state.topics = agents["topic_agent"].discover_trending_topics()
+                    
+                    add_log(f"Successfully discovered {len(st.session_state.topics)} trending topics", "success")
                     st.session_state.stage = 'select'
                     st.rerun()
                 except Exception as e:
+                    add_log(f"Error discovering topics: {str(e)}", "error")
                     st.error(f"Error discovering topics: {str(e)}")
                     logger.error(f"Error discovering topics: {str(e)}", exc_info=True)
     
@@ -270,6 +333,7 @@ def main():
                 display_topic_card(topic, i+1)
                 if st.button(f"Select Topic {i+1}", key=f"select_topic_{i}"):
                     st.session_state.selected_topic = topic
+                    add_log(f"Selected topic: {topic.get('title', '')}", "info")
                     st.session_state.stage = 'generate'
                     st.rerun()
         else:
@@ -287,22 +351,162 @@ def main():
         st.markdown(f"<p><strong>Description:</strong> {selected_topic.get('description', '')}</p>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
         
+        # Option for full workflow or step-by-step
+        generate_options = st.radio(
+            "Choose generation mode:",
+            ["Generate all in one go (Content, Refinement, Image)", "Step-by-step generation"]
+        )
+        
         if st.session_state.content is None:
-            if st.button("Generate Content", key="generate_btn"):
-                with st.spinner("Researching and generating content..."):
+            if st.button("Begin Generation", key="generate_btn"):
+                if generate_options == "Generate all in one go (Content, Refinement, Image)":
+                    # Run the entire workflow in one go
                     try:
-                        # First research the topic
+                        # 1. Research and generate content
+                        add_log("Researching topic details...", "info")
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        status_text.text("Researching and gathering information...")
                         research_data = agents["topic_agent"].get_detailed_research(selected_topic)
                         topic_data = {"topic": selected_topic, "research_data": research_data}
                         
-                        # Then generate content
+                        add_log("Research completed", "success")
+                        progress_bar.progress(0.15)
+                        
+                        # 2. Generate initial content
+                        status_text.text("Generating initial blog post content...")
+                        add_log("Generating initial blog content...", "info")
+                        
                         content_data = agents["content_agent"].generate_content(topic_data)
                         st.session_state.content = content_data
-                        st.session_state.stage = 'refine'
+                        
+                        add_log(f"Initial content generated: '{content_data.get('title', '')}'", "success")
+                        progress_bar.progress(0.30)
+                        
+                        # 3. Refine content through iterations
+                        status_text.text("Refining content through multiple iterations...")
+                        add_log("Starting content refinement process...", "info")
+                        
+                        # Initialize with original content
+                        current_content = content_data.get("content", "")
+                        title = content_data.get("title", "")
+                        refinement_history = []
+                        
+                        # Track iterations (maximum 4)
+                        for iteration in range(4):
+                            status_text.text(f"Iteration {iteration+1}/4: Generating critique...")
+                            add_log(f"Refinement iteration {iteration+1}/4: Generating critique...", "info")
+                            
+                            # Generate critique
+                            critique = agents["critique_agent"].critique_content(current_content)
+                            
+                            # Store the critique
+                            refinement_history.append({
+                                "iteration": iteration + 1,
+                                "critique": critique
+                            })
+                            
+                            progress_bar.progress(0.30 + (iteration * 0.05))
+                            
+                            # Skip refinement on the last iteration
+                            if iteration < 3:
+                                status_text.text(f"Iteration {iteration+1}/4: Refining content based on critique...")
+                                add_log(f"Refinement iteration {iteration+1}/4: Implementing improvements...", "info")
+                                
+                                # Refine content based on critique
+                                refined_content = agents["critique_agent"].refine_content(current_content, critique)
+                                
+                                # Update current content for next iteration
+                                current_content = refined_content
+                                
+                                # Store the refined content
+                                refinement_history[-1]["refined_content"] = refined_content
+                            
+                            progress_bar.progress(0.30 + (iteration * 0.05) + 0.025)
+                            time.sleep(0.2)  # Small delay for UI feedback
+                        final_content = agents["critique_agent"].finalize_content(current_content, title)
+                        # Store final refined content
+                        st.session_state.refined_content = {
+                            "topic": content_data.get("topic", {}),
+                            "title": title,
+                            "content": final_content,  # This is the final version
+                            "keywords": content_data.get("keywords", []),
+                            "refinement_history": refinement_history
+                        }
+                        
+                        st.session_state.refinement_history = refinement_history
+                        add_log("Content refinement completed", "success")
+                        progress_bar.progress(0.60)
+                        
+                        # 4. Generate image
+                        status_text.text("Generating image for the blog post...")
+                        add_log("Generating accompanying image...", "info")
+                        
+                        final_content = agents["image_agent"].process_content_for_image(st.session_state.refined_content)
+                        st.session_state.final_content = final_content
+                        
+                        add_log(f"Image generated: {final_content.get('image_filename', '')}", "success")
+                        progress_bar.progress(0.85)
+                        
+                        # 5. Generate HTML
+                        status_text.text("Creating final HTML blog post...")
+                        add_log("Generating HTML for the blog post...", "info")
+                        
+                        title = final_content.get("title", "AI Technology")
+                        content = final_content.get("content", "")
+                        image_path = final_content.get("image_path", "")
+                        image_description = final_content.get("image_description", "")
+                        
+                        add_log(f"Using image: {image_path}", "info")
+                        
+                        html_content = agents["html_generator"].generate_html(
+                            title=title,
+                            content=content,
+                            image_path=image_path,
+                            image_alt=image_description,
+                            image_caption=image_description
+                        )
+                        
+                        html_path = agents["html_generator"].save_html(html_content)
+                        st.session_state.html_output = {
+                            "content": html_content,
+                            "path": html_path
+                        }
+                        
+                        add_log(f"HTML blog post created: {html_path}", "success")
+                        progress_bar.progress(1.0)
+                        status_text.text("Blog post successfully generated!")
+                        
+                        # Go to the final stage
+                        st.session_state.stage = 'finalize'
                         st.rerun()
+                        
                     except Exception as e:
-                        st.error(f"Error generating content: {str(e)}")
-                        logger.error(f"Error generating content: {str(e)}", exc_info=True)
+                        add_log(f"Error during generation: {str(e)}", "error")
+                        st.error(f"Error during generation: {str(e)}")
+                        logger.error(f"Error during generation: {str(e)}", exc_info=True)
+                else:
+                    # Just do content generation for step-by-step approach
+                    with st.spinner("Researching and generating content..."):
+                        try:
+                            add_log("Researching topic details...", "info")
+                            # First research the topic
+                            research_data = agents["topic_agent"].get_detailed_research(selected_topic)
+                            topic_data = {"topic": selected_topic, "research_data": research_data}
+                            
+                            add_log("Generating blog content...", "info")
+                            # Then generate content
+                            content_data = agents["content_agent"].generate_content(topic_data)
+                            st.session_state.content = content_data
+                            
+                            add_log(f"Content generated: '{content_data.get('title', '')}'", "success")
+                            st.session_state.stage = 'refine'
+                            st.rerun()
+                        except Exception as e:
+                            add_log(f"Error generating content: {str(e)}", "error")
+                            st.error(f"Error generating content: {str(e)}")
+                            logger.error(f"Error generating content: {str(e)}", exc_info=True)
         else:
             st.markdown("<div class='final-content'>", unsafe_allow_html=True)
             st.markdown(f"<h2>{st.session_state.content.get('title', '')}</h2>", unsafe_allow_html=True)
@@ -332,6 +536,8 @@ def main():
                     status_text = st.empty()
                     
                     try:
+                        add_log("Starting content refinement process...", "info")
+                        
                         # Initialize with original content
                         content_data = st.session_state.content
                         current_content = content_data.get("content", "")
@@ -341,6 +547,7 @@ def main():
                         # Track iterations (maximum 4)
                         for iteration in range(4):
                             status_text.text(f"Iteration {iteration+1}/4: Generating critique...")
+                            add_log(f"Refinement iteration {iteration+1}/4: Generating critique...", "info")
                             
                             # Generate critique
                             critique = agents["critique_agent"].critique_content(current_content)
@@ -356,6 +563,7 @@ def main():
                             # Skip refinement on the last iteration
                             if iteration < 3:
                                 status_text.text(f"Iteration {iteration+1}/4: Refining content based on critique...")
+                                add_log(f"Refinement iteration {iteration+1}/4: Implementing improvements...", "info")
                                 
                                 # Refine content based on critique
                                 refined_content = agents["critique_agent"].refine_content(current_content, critique)
@@ -367,22 +575,25 @@ def main():
                                 refinement_history[-1]["refined_content"] = refined_content
                             
                             progress_bar.progress((iteration * 2 + 2) / 8)
-                            time.sleep(0.5)  # Small delay for UI feedback
-                        
+                            time.sleep(0.2)  # Small delay for UI feedback
+                        # Perform final formatting before returning
+                        final_content = agents["critique_agent"].finalize_content(current_content, title)
                         # Store final results
                         st.session_state.refined_content = {
                             "topic": content_data.get("topic", {}),
                             "title": title,
-                            "content": current_content,  # This is the final version
+                            "content": final_content,  # This is the final version
                             "keywords": content_data.get("keywords", []),
                             "refinement_history": refinement_history
                         }
                         
                         st.session_state.refinement_history = refinement_history
+                        add_log("Content refinement completed", "success")
                         st.session_state.stage = 'visualize'
                         st.rerun()
                         
                     except Exception as e:
+                        add_log(f"Error during refinement: {str(e)}", "error")
                         st.error(f"Error during refinement: {str(e)}")
                         logger.error(f"Error during refinement: {str(e)}", exc_info=True)
         else:
@@ -423,11 +634,15 @@ def main():
             if st.button("Generate Image", key="image_btn"):
                 with st.spinner("Creating image for your content..."):
                     try:
+                        add_log("Generating image for blog post...", "info")
                         final_content = agents["image_agent"].process_content_for_image(st.session_state.refined_content)
                         st.session_state.final_content = final_content
+                        
+                        add_log(f"Image generated: {final_content.get('image_filename', '')}", "success")
                         st.session_state.stage = 'finalize'
                         st.rerun()
                     except Exception as e:
+                        add_log(f"Error generating image: {str(e)}", "error")
                         st.error(f"Error generating image: {str(e)}")
                         logger.error(f"Error generating image: {str(e)}", exc_info=True)
         else:
@@ -444,15 +659,20 @@ def main():
         # Generate HTML if not already done
         if not st.session_state.html_output:
             try:
+                add_log("Generating HTML for blog post...", "info")
+                
                 title = final_content.get("title", "AI Technology")
                 content = final_content.get("content", "")
-                image_path = final_content.get("full_path", "")  # Use full path for display in Streamlit
+                image_path = final_content.get("image_path", "")
                 image_description = final_content.get("image_description", "")
                 
+                add_log(f"Using image: {image_path}", "info")
+                
+                # Generate HTML content
                 html_content = agents["html_generator"].generate_html(
                     title=title,
                     content=content,
-                    image_path=image_path.split("/")[-1] if image_path else "",
+                    image_path=image_path.split("/")[-1],
                     image_alt=image_description,
                     image_caption=image_description
                 )
@@ -462,7 +682,10 @@ def main():
                     "content": html_content,
                     "path": html_path
                 }
+                
+                add_log(f"HTML blog post created: {html_path}", "success")
             except Exception as e:
+                add_log(f"Error generating HTML: {str(e)}", "error")
                 st.error(f"Error generating HTML: {str(e)}")
                 logger.error(f"Error generating HTML: {str(e)}", exc_info=True)
         
@@ -473,9 +696,12 @@ def main():
         st.markdown(f"<h1>{final_content.get('title', '')}</h1>", unsafe_allow_html=True)
         
         # Image with caption
-        image_path = final_content.get("full_path", "")
+        image_path = "E:/Work/ai_content_generator" + final_content.get("image_path", "")[1:]
         if image_path and os.path.exists(image_path):
-            st.image(image_path, caption=final_content.get("image_description", ""), use_column_width=True)
+            st.image(image_path, caption=final_content.get("image_description", ""), width=300)  
+        else:
+            st.warning(f"Image not found at path: {image_path}")
+            add_log(f"Image not found at path: {image_path}", "error")
         
         # Content
         st.markdown(final_content.get("content", ""), unsafe_allow_html=True)
@@ -488,27 +714,35 @@ def main():
         
         with col1:
             if st.session_state.html_output and "path" in st.session_state.html_output:
-                with open(st.session_state.html_output["path"], "rb") as file:
-                    html_bytes = file.read()
-                
-                st.download_button(
-                    label="Download HTML",
-                    data=html_bytes,
-                    file_name=os.path.basename(st.session_state.html_output["path"]),
-                    mime="text/html"
-                )
+                try:
+                    with open(st.session_state.html_output["path"], "rb") as file:
+                        html_bytes = file.read()
+                    
+                    st.download_button(
+                        label="Download HTML Blog Post",
+                        data=html_bytes,
+                        file_name=os.path.basename(st.session_state.html_output["path"]),
+                        mime="text/html"
+                    )
+                except Exception as e:
+                    st.error(f"Error preparing HTML download: {str(e)}")
+                    add_log(f"Error preparing HTML download: {str(e)}", "error")
         
         with col2:
             if image_path and os.path.exists(image_path):
-                with open(image_path, "rb") as file:
-                    image_bytes = file.read()
-                
-                st.download_button(
-                    label="Download Image",
-                    data=image_bytes,
-                    file_name=os.path.basename(image_path),
-                    mime="image/png"
-                )
+                try:
+                    with open(image_path, "rb") as file:
+                        image_bytes = file.read()
+                    
+                    st.download_button(
+                        label="Download Featured Image",
+                        data=image_bytes,
+                        file_name=os.path.basename(image_path),
+                        mime="image/png"
+                    )
+                except Exception as e:
+                    st.error(f"Error preparing image download: {str(e)}")
+                    add_log(f"Error preparing image download: {str(e)}", "error")
         
         # Start over
         st.markdown("<div class='button-container'>", unsafe_allow_html=True)
@@ -521,6 +755,7 @@ def main():
             st.session_state.refinement_history = []
             st.session_state.final_content = None
             st.session_state.html_output = None
+            # Keep the logs
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
