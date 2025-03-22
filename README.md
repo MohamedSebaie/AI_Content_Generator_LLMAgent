@@ -26,7 +26,7 @@ This project implements a sophisticated LangGraph-orchestrated workflow that:
 
 ## 🛠️ Technology Stack
 
-- **Large Language Model**: AWS Bedrock with Claude 3 Sonnet for content generation and refinement
+- **Large Language Model**: AWS Bedrock with Claude 3.5 Sonnet for content generation and refinement
 - **Image Generation**: Hugging Face Stable Diffusion XL for custom visuals
 - **Web Research**: Google Serper API for topic discovery and research
 - **Workflow Orchestration**: LangGraph for state management and component coordination
