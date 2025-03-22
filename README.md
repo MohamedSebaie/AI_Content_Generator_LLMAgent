@@ -47,8 +47,8 @@ This project implements a sophisticated LangGraph-orchestrated workflow that:
 
 1. **Clone the repository:**
 ```bash
-git clone https://github.com/yourusername/ai_content_generator.git
-cd ai_content_generator
+git clone https://github.com/MohamedSebaie/AI_Content_Generator_LLMAgent.git
+cd AI_Content_Generator_LLMAgent
 ```
 
 2. **Install dependencies:**
@@ -166,4 +166,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Acknowledgments
 
-This project uses several powerful AI technologies including AWS Bedrock (Claude 3 Sonnet), Hugging Face Stable Diffusion, and Google's search APIs. Thanks to the developers of these technologies and the LangChain/LangGraph ecosystem.
+This project uses several powerful AI technologies including AWS Bedrock (Claude 3.5 Sonnet), Hugging Face Stable Diffusion, and Google's search APIs. Thanks to the developers of these technologies and the LangChain/LangGraph ecosystem.
