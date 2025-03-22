@@ -28,8 +28,7 @@ This project implements an automated AI agent that generates high-quality conten
 
 ## Installation
 
-1. Clone the repository:git clone https://github.com/mohamedsebaie/ai_content_generation_agent.git
-cd ai_content_generation_agent
+1. Clone the repository:https://github.com/MohamedSebaie/AI_Content_Generator_LLMAgent.git then cd AI_Content_Generator_LLMAgent
 2. Install the required Python packages:pip install -r requirements.txt
 3. Create a `.env` file in the project root with your API keys:
 ```
